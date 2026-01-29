@@ -89,7 +89,7 @@
 ## 技术特性
 
 - **异步架构**: 基于 `asyncio` 和 `aiohttp`，性能优异
-- **API集成**: 使用 MineBBS MOTD API (`https://motd.minebbs.com/api/status`) 获取服务器状态
+- **API集成**: 使用 mcstatus.io API (`https://api.mcstatus.io/v2/status`) 获取服务器状态
 - **直接推送**: 通过 AIOCQHTTP 客户端的 `send_group_msg` 接口直接发送群消息
 - **错误处理**: 完整的异常处理和超时机制（API请求超时10秒）
 - **日志系统**: 详细的日志记录，便于调试和监控
@@ -127,21 +127,31 @@ data/plugins/服务器查询/
 
 ## API说明
 
-### MineBBS MOTD API
-**请求URL**: `https://motd.minebbs.com/api/status?ip={ip}&port={port}&stype=je`
+### mcstatus.io API
+**请求URL**: `https://api.mcstatus.io/v2/status/{type}/{ip}:{port}`
+
+其中 `{type}` 为 `java` 或 `bedrock`。
 
 **返回数据格式**:
 ```json
 {
-  "status": "online",
-  "version": "1.20.1",
+  "online": true,
+  "hostname": "Server Name",
+  "version": {
+    "name": "1.20.1",
+    "protocol": 763
+  },
   "players": {
     "online": 2,
     "max": 20,
-    "sample": [
-      {"name": "Player1"},
-      {"name": "Player2"}
+    "list": [
+      {"name": "Player1", "name_clean": "Player1"},
+      {"name": "Player2", "name_clean": "Player2"}
     ]
+  },
+  "motd": {
+    "clean": "Welcome to the server",
+    "raw": "§aWelcome to the server"
   }
 }
 ```

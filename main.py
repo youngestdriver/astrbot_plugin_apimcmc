@@ -1,7 +1,6 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
-from astrbot.api.platform import MessageType
 from astrbot.api.event.filter import PlatformAdapterType
 import asyncio
 import aiohttp
@@ -15,13 +14,13 @@ class MyPlugin(Star):
         self.config = config or {}
         self.task = None  # 用于存储定时任务
         
-        # 从配置获取参数，不再使用具体的默认值
+        # 从配置获取参数
         target_group_raw = self.config.get("target_group")
         self.target_group = None
         
         # 验证target_group是否为有效数字
         if target_group_raw is not None:
-            target_group_str = str(target_group_raw)
+            target_group_str = str(target_group_raw).strip()
             if target_group_str.isdigit():
                 self.target_group = target_group_str
             else:
@@ -65,19 +64,10 @@ class MyPlugin(Star):
             async with aiohttp.ClientSession() as session:
                 async with session.get("https://v1.hitokoto.cn/?encode=text", timeout=aiohttp.ClientTimeout(total=5)) as response:
                     if response.status == 200:
-                        text = await response.text()
-                        return text.strip()
-                    else:
-                        logger.warning(f"获取一言失败: HTTP {response.status}")
-                        return None
-        except aiohttp.ClientError as e:
-            logger.warning(f"获取一言网络请求失败: {e}")
-            return None
-        except asyncio.TimeoutError:
-            logger.warning("获取一言请求超时")
-            return None
+                        return (await response.text()).strip()
+                    return None
         except Exception as e:
-            logger.warning(f"获取一言时发生未知错误: {e}")
+            logger.warning(f"获取一言失败: {e}")
             return None
 
     def _extract_player_names(self, player_list):
@@ -90,23 +80,18 @@ class MyPlugin(Star):
         Returns:
             list: 玩家名称列表
         """
-        if not player_list:
+        if not player_list or not isinstance(player_list, list):
             return []
         
-        # mcstatus.io API返回的玩家列表格式
-        if isinstance(player_list, list):
-            player_names = []
-            for player in player_list:
-                if isinstance(player, dict):
-                    # 提取玩家名
-                    name = player.get("name_clean") or player.get("name") or player.get("username") or "未知玩家"
-                    player_names.append(str(name))
-                else:
-                    player_names.append(str(player))
-            return player_names
-        
-        # 其他格式
-        return []
+        player_names = []
+        for player in player_list:
+            if isinstance(player, dict):
+                # 提取玩家名
+                name = player.get("name_clean") or player.get("name") or player.get("username") or "未知玩家"
+                player_names.append(str(name))
+            else:
+                player_names.append(str(player))
+        return player_names
 
     async def _fetch_server_data(self):
         """
@@ -145,12 +130,6 @@ class MyPlugin(Star):
                         return self._parse_server_data(data)
                     else:
                         logger.warning(f"获取服务器信息失败 (状态码: {response.status})")
-                        # 尝试获取错误信息
-                        try:
-                            error_data = await response.json()
-                            logger.warning(f"API错误信息: {error_data}")
-                        except:
-                            pass
                         return None
                         
         except aiohttp.ClientError as e:
@@ -415,17 +394,12 @@ class MyPlugin(Star):
         logger.info("Minecraft服务器监控插件已加载，使用 /start_hello 启动定时任务")
     
     async def notify_subscribers(self, message: str):
-        """发送通知到目标群组（抽象的通知函数）"""
+        """发送通知到目标群组"""
         if not self.target_group:
             logger.error("❌ 目标群号未配置，无法发送通知")
             return False
         
         try:
-            # 验证群号格式（双重保险）
-            if not self.target_group.isdigit():
-                logger.error(f"❌ 无效的群号格式: {self.target_group}")
-                return False
-            
             # 获取AIOCQHTTP客户端并发送
             platform = self.context.get_platform(PlatformAdapterType.AIOCQHTTP)
             
@@ -446,9 +420,6 @@ class MyPlugin(Star):
             else:
                 logger.warning(f"❌ 发送失败: {result}")
                 return False
-        except ValueError as e:
-            logger.error(f"❌ 群号转换失败: {self.target_group}, 错误: {e}")
-            return False
         except Exception as e:
             logger.error(f"发送通知时出错: {e}")
             return False
@@ -587,18 +558,16 @@ class MyPlugin(Star):
         
         yield event.plain_result(message)
     
-    # 保留旧指令以兼容（作为代理）
+    # 兼容旧版指令名称
     @filter.command("start_hello")
     async def start_hello_task(self, event: AstrMessageEvent):
         """启动定时发送任务（兼容旧版）"""
-        # 直接代理到新方法，正确处理异步生成器
         async for result in self.start_server_monitor_task(event):
             yield result
     
     @filter.command("stop_hello")
     async def stop_hello_task(self, event: AstrMessageEvent):
         """停止定时发送任务（兼容旧版）"""
-        # 直接代理到新方法，正确处理异步生成器
         async for result in self.stop_server_monitor_task(event):
             yield result
     
@@ -622,11 +591,6 @@ class MyPlugin(Star):
             yield event.plain_result("❌ 目标群号未设置，请先使用 /set_group 命令设置群号")
             return
         
-        # 验证群号格式
-        if not self.target_group.isdigit():
-            yield event.plain_result(f"❌ 当前群号 '{self.target_group}' 格式无效，请使用 /set_group 重新设置")
-            return
-        
         try:
             # 获取服务器信息
             server_info = await self.get_minecraft_server_info()
@@ -648,8 +612,6 @@ class MyPlugin(Star):
             else:
                 yield event.plain_result(f"❌ 测试发送失败: {result}")
                 
-        except ValueError as e:
-            yield event.plain_result(f"❌ 群号格式错误: {e}")
         except Exception as e:
             yield event.plain_result(f"❌ 测试发送出错: {e}")
 

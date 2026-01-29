@@ -468,13 +468,6 @@ class MyPlugin(Star):
                 # 出错时等待一下再继续
                 await asyncio.sleep(5)
 
-    # 基础指令
-    @filter.command("helloworld")
-    async def helloworld(self, event: AstrMessageEvent):
-        """Hello World 指令"""
-        user_name = event.get_sender_name()
-        yield event.plain_result(f"Hello, {user_name}!")
-
     # 定时任务控制指令
     @filter.command("start_server_monitor")
     async def start_server_monitor_task(self, event: AstrMessageEvent):
@@ -570,50 +563,6 @@ class MyPlugin(Star):
         """停止定时发送任务（兼容旧版）"""
         async for result in self.stop_server_monitor_task(event):
             yield result
-    
-    @filter.command("set_group")
-    async def set_target_group(self, event: AstrMessageEvent, group_id: str):
-        """设置目标群号"""
-        # 验证群号是否为有效数字
-        if not group_id.strip().isdigit():
-            yield event.plain_result(f"❌ 无效的群号: '{group_id}'。请输入纯数字群号。")
-            return
-        
-        self.target_group = group_id.strip()
-        logger.info(f"设置目标群号为: {self.target_group}")
-        yield event.plain_result(f"✅ 目标群号已设置为: {self.target_group}")
-
-    # 测试指令
-    @filter.command("test_send")
-    async def test_send(self, event: AstrMessageEvent):
-        """测试发送服务器信息到目标群"""
-        if not self.target_group:
-            yield event.plain_result("❌ 目标群号未设置，请先使用 /set_group 命令设置群号")
-            return
-        
-        try:
-            # 获取服务器信息
-            server_info = await self.get_minecraft_server_info()
-            
-            platform = self.context.get_platform(PlatformAdapterType.AIOCQHTTP)
-            if not platform or not hasattr(platform, 'get_client'):
-                yield event.plain_result("❌ 无法获取AIOCQHTTP平台")
-                return
-                
-            client = platform.get_client()
-            
-            result = await client.api.call_action('send_group_msg', **{
-                'group_id': int(self.target_group),
-                'message': f"📋 测试发送:\n{server_info}"
-            })
-            
-            if result and result.get('message_id'):
-                yield event.plain_result(f"✅ 测试发送成功！消息ID: {result.get('message_id')}")
-            else:
-                yield event.plain_result(f"❌ 测试发送失败: {result}")
-                
-        except Exception as e:
-            yield event.plain_result(f"❌ 测试发送出错: {e}")
 
     async def terminate(self):
         """插件销毁方法"""

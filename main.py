@@ -9,6 +9,8 @@ from datetime import datetime
 
 @register("minecraft_monitor", "YourName", "Minecraft服务器监控插件，定时获取服务器状态", "1.0.0")
 class MyPlugin(Star):
+    DEFAULT_API_BASE_URL = "https://api.mcstatus.io/v2/status/"
+
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         self.config = config or {}
@@ -30,8 +32,15 @@ class MyPlugin(Star):
         self.server_ip = self.config.get("server_ip")
         self.server_port = self.config.get("server_port")
         self.server_type = self.config.get("server_type", "bedrock")  # 服务器类型：bedrock或java
+        self.api_base_url = str(
+            self.config.get("api_base_url", self.config.get("api_url_template", self.DEFAULT_API_BASE_URL))
+        ).strip()
         self.check_interval = self.config.get("check_interval", 10)
         self.enable_auto_monitor = self.config.get("enable_auto_monitor", False)
+
+        # 配置为空时回退默认模板
+        if not self.api_base_url:
+            self.api_base_url = self.DEFAULT_API_BASE_URL
         
         # 状态缓存，用于检测变化
         self.last_player_count = None  # 上次的玩家数量，None表示未初始化
@@ -57,18 +66,6 @@ class MyPlugin(Star):
         if not self.task or self.task.done():
             self.task = asyncio.create_task(self.direct_hello_task())
             logger.info("🚀 自动启动服务器监控任务")
-    
-    async def get_hitokoto(self):
-        """获取一言句子"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get("https://v1.hitokoto.cn/?encode=text", timeout=aiohttp.ClientTimeout(total=5)) as response:
-                    if response.status == 200:
-                        return (await response.text()).strip()
-                    return None
-        except Exception as e:
-            logger.warning(f"获取一言失败: {e}")
-            return None
 
     def _extract_player_names(self, player_list):
         """
@@ -106,11 +103,19 @@ class MyPlugin(Star):
             return None
         
         try:
-            # 使用mcstatus.io API
-            # 注意：mcstatus.io API需要正确的URL格式
-            api_url = f"https://api.mcstatus.io/v2/status/{self.server_type}/{self.server_ip}:{self.server_port}"
+            # 通过基础地址构建API URL，兼容旧版模板配置
+            if "{type}" in self.api_base_url or "{ip}" in self.api_base_url or "{port}" in self.api_base_url:
+                api_url = (
+                    self.api_base_url
+                    .replace("{type}", str(self.server_type))
+                    .replace("{ip}", str(self.server_ip))
+                    .replace("{port}", str(self.server_port))
+                )
+            else:
+                base_url = self.api_base_url.rstrip("/") + "/"
+                api_url = f"{base_url}{self.server_type}/{self.server_ip}:{self.server_port}"
             
-            logger.info(f"使用mcstatus.io API查询: {api_url}")
+            logger.info(f"使用状态API查询: {api_url}")
             
             async with aiohttp.ClientSession() as session:
                 # 添加User-Agent头以避免某些API限制
@@ -449,13 +454,8 @@ class MyPlugin(Star):
                     # 使用已获取的数据格式化完整状态（避免第二次网络请求）
                     full_status = self._format_server_info(server_data)
                     
-                    # 获取一言句子
-                    hitokoto = await self.get_hitokoto()
-                    
                     # 构建最终消息
                     final_message = f"{change_notification}\n\n📊 当前状态：\n{full_status}"
-                    if hitokoto:
-                        final_message += f"\n\n💬 {hitokoto}"
                     
                     # 使用抽象的通知函数发送消息
                     await self.notify_subscribers(final_message)
@@ -494,12 +494,6 @@ class MyPlugin(Star):
     async def get_server_status(self, event: AstrMessageEvent):
         """立即获取服务器状态"""
         server_info = await self.get_minecraft_server_info()
-        
-        # 获取一言句子
-        hitokoto = await self.get_hitokoto()
-        if hitokoto:
-            server_info += f"\n\n💬 {hitokoto}"
-        
         yield event.plain_result(server_info)
     
     @filter.command("重置监控")

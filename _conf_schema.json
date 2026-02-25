@@ -29,6 +29,12 @@
     "hint": "服务器类型：java 或 bedrock",
     "default": "bedrock"
   },
+  "api_base_url": {
+    "description": "状态API基础地址",
+    "type": "string",
+    "hint": "只需填写基础地址，例如 https://api.mcstatus.io/v2/status/ ，其余部分由插件自动拼接",
+    "default": "https://api.mcstatus.io/v2/status/"
+  },
   "check_interval": {
     "description": "检查间隔（秒）",
     "type": "int",

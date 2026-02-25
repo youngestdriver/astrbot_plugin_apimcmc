@@ -13,7 +13,6 @@
 - ⚡ **实时查询**: 支持即时查询服务器当前状态
 - ⚙️ **灵活配置**: 支持通过WebUI配置目标群、服务器地址、检查间隔等
 - 🚀 **自动启动**: 可配置插件加载时自动启动监控（延迟5秒启动）
-- 💬 **一言集成**: 消息推送时附带一言句子，更有趣味性
 
 ## 配置选项
 
@@ -25,6 +24,8 @@
 | `server_name` | 服务器名称 | 字符串 | "Minecraft服务器" | ❌ |
 | `server_ip` | 服务器IP地址 | 字符串 | 无 | ✅ |
 | `server_port` | 服务器端口 | 数字 | 无 | ✅ |
+| `server_type` | 服务器类型 | 字符串 | "bedrock" | ❌ |
+| `api_base_url` | 状态API基础地址 | 字符串 | `https://api.mcstatus.io/v2/status/` | ❌ |
 | `check_interval` | 监控检查间隔（秒） | 数字 | 10 | ❌ |
 | `enable_auto_monitor` | 插件加载时自动启动监控 | 布尔值 | false | ❌ |
 
@@ -38,7 +39,7 @@
 - `/reset_monitor` - 重置监控状态缓存（清除首次检测标记）
 
 ### 查询指令
-- `/查询` - 立即查询服务器当前状态（附带一言句子）
+- `/查询` - 立即查询服务器当前状态
 
 ## 监控逻辑
 
@@ -66,8 +67,6 @@
 
 📊 当前状态：
 [服务器详细信息]
-
-💬 [一言句子]
 ```
 
 ### 状态缓存
@@ -104,6 +103,8 @@ data/plugins/服务器查询/
 - **target_group**: 你的QQ群号
 - **server_ip**: Minecraft服务器IP
 - **server_port**: 服务器端口（Java版默认25565）
+- **server_type**: 服务器类型（`java` 或 `bedrock`）
+- **api_base_url**: 状态查询API基础地址（只需填写到 `/v2/status/`）
 - **server_name**: 自定义服务器名称（可选）
 - **check_interval**: 检查间隔，建议10-60秒
 - **enable_auto_monitor**: 是否自动启动监控
@@ -119,6 +120,8 @@ data/plugins/服务器查询/
 **请求URL**: `https://api.mcstatus.io/v2/status/{type}/{ip}:{port}`
 
 其中 `{type}` 为 `java` 或 `bedrock`。
+
+⚠️ 默认使用以上 URL。你也可以通过 `api_base_url` 自定义 API 基础地址，插件会自动拼接 `{type}/{ip}:{port}`。
 
 **返回数据格式**:
 ```json
@@ -143,11 +146,6 @@ data/plugins/服务器查询/
   }
 }
 ```
-
-### 一言API
-**请求URL**: `https://v1.hitokoto.cn/?encode=text`
-
-返回纯文本格式的随机句子。
 
 ## 注意事项
 

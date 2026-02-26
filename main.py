@@ -268,12 +268,6 @@ class MyPlugin(Star):
                 motd = motd[:120] + "..."
             message += f"📝 MOTD: {motd}\n"
             
-        message += f"🎮 版本: {version}\n"
-        
-        # 添加协议版本
-        if protocol and protocol != '未知':
-            message += f"🔌 协议: {protocol}\n"
-            
         # 添加服务器软件信息
         if server_software and server_software != '未知':
             message += f"🛠️ 软件: {server_software}\n"

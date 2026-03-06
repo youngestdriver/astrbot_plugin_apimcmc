@@ -31,11 +31,11 @@ class MyPlugin(Star):
         self.server_name = self.config.get("server_name", "Minecraft服务器")
         self.server_ip = self.config.get("server_ip")
         self.server_port = self.config.get("server_port")
-        self.server_type = self.config.get("server_type", "bedrock")  # 服务器类型：bedrock或java
+        self.server_type = self.config.get("server_type", "java")  # 服务器类型：bedrock或java
         self.api_base_url = str(
             self.config.get("api_base_url", self.config.get("api_url_template", self.DEFAULT_API_BASE_URL))
         ).strip()
-        self.check_interval = self.config.get("check_interval", 10)
+        self.check_interval = self.config.get("check_interval", 60)
         self.enable_auto_monitor = self.config.get("enable_auto_monitor", False)
 
         # 配置为空时回退默认模板
@@ -468,6 +468,16 @@ class MyPlugin(Star):
             return server_data
         
         return self._format_server_info(server_data)
+
+    def _update_monitor_state_cache(self, server_data):
+        """使用最新服务器数据同步监控缓存。"""
+        if server_data is None:
+            return
+
+        current_player_map = self._extract_player_identity_map(server_data.get('players', []))
+        self.last_player_ids = set(current_player_map.keys())
+        self.last_player_id_name_map = current_player_map.copy()
+        self.last_status = server_data.get('status')
     
     def check_server_changes(self, server_data):
         """检查服务器状态是否有变化，返回是否需要发送消息和变化描述"""
@@ -481,17 +491,12 @@ class MyPlugin(Star):
         current_player_map = self._extract_player_identity_map(current_players)
         current_player_ids = set(current_player_map.keys())
 
-        # 检查是否是首次检查（使用 None 判断）
-        if self.last_player_ids is None:
-            # 首次检查，更新缓存但不发送消息（除非有玩家在线）
+        # 缓存不存在时静默初始化，不触发通知
+        if self.last_player_ids is None or self.last_status is None:
             self.last_player_ids = current_player_ids.copy()
             self.last_player_id_name_map = current_player_map.copy()
             self.last_status = current_status
-
-            if current_player_ids:
-                return True, "服务器监控已启动，当前有玩家在线"
-            else:
-                return True, "服务器监控已启动"
+            return False, "监控状态缓存未初始化，已静默初始化"
 
         # 检查变化
         changes = []
@@ -533,7 +538,7 @@ class MyPlugin(Star):
     
     async def initialize(self):
         """插件初始化方法"""
-        logger.info("Minecraft服务器监控插件已加载，使用 /start_hello 启动定时任务")
+        logger.info("Minecraft服务器监控插件已加载，使用 start_server_monitor 启动定时任务")
     
     async def notify_subscribers(self, message: str):
         """发送通知到目标群组"""
@@ -568,6 +573,17 @@ class MyPlugin(Star):
     
     async def direct_hello_task(self):
         """定时获取并检测Minecraft服务器变化"""
+        # 首次启动静默初始化：记录当前状态，不发送通知
+        try:
+            initial_server_data = await self._fetch_server_data()
+            if initial_server_data is not None:
+                self._update_monitor_state_cache(initial_server_data)
+                logger.info("监控任务已静默启动，已记录当前服务器状态")
+            else:
+                logger.warning("监控任务启动时获取服务器数据失败，将在后续周期重试初始化状态")
+        except Exception as e:
+            logger.error(f"监控任务静默初始化失败: {e}")
+
         while True:
             try:
                 # 等待配置的检查间隔
@@ -578,6 +594,12 @@ class MyPlugin(Star):
                 
                 if server_data is None:
                     logger.warning("❌ 获取服务器数据失败，跳过本次检查")
+                    continue
+
+                # 缓存缺失时静默重建，等待下一轮再做变更检测
+                if self.last_player_ids is None or self.last_status is None:
+                    self._update_monitor_state_cache(server_data)
+                    logger.info("监控状态缓存缺失，已静默重建，等待下一轮检测")
                     continue
                 
                 # 检查是否有变化

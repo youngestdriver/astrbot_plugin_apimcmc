@@ -18,14 +18,21 @@
 1. AstrBot 加载插件并实例化 `MyPlugin`。
 2. `__init__` 读取配置，校验关键字段（`target_group`、`server_ip`、`server_port`）。
 3. 若 `enable_auto_monitor=true` 且配置完整，延迟 5 秒创建后台监控任务。
-4. 后台任务循环执行：拉取服务器状态 -> 对比缓存 -> 有变化则发群消息。
-5. 插件卸载时在 `terminate` 中取消任务。
+4. 后台任务启动后先静默拉取一次服务器状态并写入缓存，不发送启动通知。
+5. 随后循环执行：等待间隔 -> 拉取服务器状态 -> 对比缓存 -> 有变化则发群消息。
+6. 插件卸载时在 `terminate` 中取消任务。
 
 ### 监控主循环
 
 主循环函数：`direct_hello_task`。
 
-每次循环行为：
+启动阶段：
+
+1. 调用 `_fetch_server_data` 拉取一次状态作为基线
+2. 调用 `_update_monitor_state_cache` 写入缓存
+3. 不发送消息（静默初始化）
+
+每次循环行为（初始化之后）：
 
 1. `sleep(check_interval)`
 2. 调用 `_fetch_server_data` 同时请求主接口与自定义接口（主接口优先，失败回退自定义）
@@ -46,7 +53,7 @@
 - `/start_server_monitor`：启动后台监控
 - `/stop_server_monitor`：停止后台监控
 - `/查询`：立即查询服务器状态
-- `/重置监控`：清空缓存并重置首次检测状态
+- `/重置监控`：清空缓存；下次检测先静默重建基线
 
 ## 配置项（真实来源）
 
@@ -78,7 +85,7 @@
 - 修改行为前优先阅读 `main.py`，不要只看 `README.md`。
 - 涉及命令名、配置项时，要同步更新 `README.md`、`_conf_schema.json`、`metadata.yaml`。
 - 新增配置项时必须给默认值、描述、hint，并在 `__init__` 中落地读取和校验。
-- 监控逻辑变更必须考虑“首次检测”行为，避免刷屏。
+- 监控逻辑变更必须考虑“静默初始化基线 + 下一轮检测”行为，避免刷屏。
 
 ### 推荐变更点
 
@@ -100,30 +107,32 @@ python -m py_compile main.py
 
 ## 当前行为要点
 
-1. 玩家进出判定以玩家 ID 集合差异为准，不再使用总人数差值作为主判断依据。
-2. 状态消息会输出 `🤖 在线假人: N`，`Anonymous Player`（含前缀变体）计为假人。
-3. 查询链路为“主接口优先 + 自定义接口回退”，并发发起请求以减少等待。
+1. 监控任务启动后先静默记录当前状态，不发送“监控已启动”类通知。
+2. 玩家进出判定以玩家 ID 集合差异为准，不再使用总人数差值作为主判断依据。
+3. 状态消息会输出 `🤖 在线假人: N`，`Anonymous Player`（含前缀变体）计为假人。
+4. 查询链路为“主接口优先 + 自定义接口回退”，并发发起请求以减少等待。
 
 ## 已知不一致与技术债
 
 1. `main.py` 的 `@register` 信息与 `metadata.yaml` 不一致：
 - register 名称：`minecraft_monitor`
-- metadata 名称：`astrbot_plugin_minecraft_monitor`
+- metadata 名称：`astrbot_plugin_minecraft_watcher`
 - register 版本：`1.0.0`
-- metadata 版本：`v2.0`
+- metadata 版本：`v1.2`
 
-2. `initialize` 日志提示命令是 `/start_hello`，但实际命令是 `/start_server_monitor`。
+2. `main.py` 与 `_conf_schema.json` 的默认值不一致：
+- `server_type`：代码默认 `bedrock`，schema 默认 `java`
+- `check_interval`：代码默认 `10`，schema 默认 `60`
 
-3. `_conf_schema.json` 默认端口 `123456` 超过常规端口范围（1-65535）。
-
-4. `server_type` 未做白名单校验，错误值会直接进入 API URL。
+3. `server_type` 未做白名单校验，错误值会直接进入 API URL。
 
 ## 建议优先改进顺序
 
 1. 统一命令文档与代码实际行为。
 2. 统一插件元数据版本与注册信息。
-3. 增加配置校验（端口范围、server_type 白名单、check_interval 下限）。
-4. 视情况拆分 `main.py`（API、格式化、状态检测、命令处理）。
+3. 统一代码默认值与 schema 默认值（`server_type`、`check_interval`）。
+4. 增加配置校验（端口范围、server_type 白名单、check_interval 下限）。
+5. 视情况拆分 `main.py`（API、格式化、状态检测、命令处理）。
 
 ## 协作提示
 

@@ -28,20 +28,20 @@
 每次循环行为：
 
 1. `sleep(check_interval)`
-2. 调用 `_fetch_server_data` 请求 `mcstatus.io`
+2. 调用 `_fetch_server_data` 同时请求主接口与自定义接口（主接口优先，失败回退自定义）
 3. 调用 `check_server_changes` 对比状态缓存
 4. 变化时拼接完整通知并调用 `notify_subscribers`
 
 状态缓存字段：
 
-- `last_player_count`
-- `last_player_list`
+- `last_player_ids`
+- `last_player_id_name_map`
 - `last_status`
 - `last_update_time`
 
 ## 命令与行为
 
-以 `main.py` 为准（README 存在不一致，见下文）。
+以 `main.py` 为准。
 
 - `/start_server_monitor`：启动后台监控
 - `/stop_server_monitor`：停止后台监控
@@ -57,7 +57,7 @@
 - `server_ip`：服务器地址
 - `server_port`：服务器端口
 - `server_type`：`java` 或 `bedrock`（代码未强校验）
-- `api_base_url`：状态 API 基础地址（只需到 `/v2/status/`，其余由代码拼接）
+- `api_base_url`：自定义状态 API 基础地址（主接口失败时回退，支持基础地址或模板）
 - `check_interval`：检测间隔秒数
 - `enable_auto_monitor`：是否自动启动监控
 
@@ -67,7 +67,8 @@
 
 - AstrBot API（`astrbot.api.*`）
 - `aiohttp`
-- 状态 API（默认 `mcstatus.io`）：`https://api.mcstatus.io/v2/status/{type}/{ip}:{port}`
+- 主状态 API（固定）：`https://api.mcstatus.io/v2/status/{type}/{ip}:{port}`
+- 自定义状态 API（可选回退）：`api_base_url`
 - AIOCQHTTP 的 `send_group_msg` 动作
 
 ## 开发约定（给后续 Agent）
@@ -97,6 +98,12 @@ python -m py_compile main.py
 
 如果在 Windows/PowerShell 下读取中文文档出现乱码，优先按 UTF-8 方式读取文件内容。
 
+## 当前行为要点
+
+1. 玩家进出判定以玩家 ID 集合差异为准，不再使用总人数差值作为主判断依据。
+2. 状态消息会输出 `🤖 在线假人: N`，`Anonymous Player`（含前缀变体）计为假人。
+3. 查询链路为“主接口优先 + 自定义接口回退”，并发发起请求以减少等待。
+
 ## 已知不一致与技术债
 
 1. `main.py` 的 `@register` 信息与 `metadata.yaml` 不一致：
@@ -107,11 +114,9 @@ python -m py_compile main.py
 
 2. `initialize` 日志提示命令是 `/start_hello`，但实际命令是 `/start_server_monitor`。
 
-3. README 写的是 `/reset_monitor`，代码真实命令是 `/重置监控`。
+3. `_conf_schema.json` 默认端口 `123456` 超过常规端口范围（1-65535）。
 
-4. `_conf_schema.json` 默认端口 `123456` 超过常规端口范围（1-65535）。
-
-5. `server_type` 未做白名单校验，错误值会直接进入 API URL。
+4. `server_type` 未做白名单校验，错误值会直接进入 API URL。
 
 ## 建议优先改进顺序
 

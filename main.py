@@ -43,8 +43,8 @@ class MyPlugin(Star):
             self.api_base_url = self.DEFAULT_API_BASE_URL
         
         # 状态缓存，用于检测变化
-        self.last_player_count = None  # 上次的玩家数量，None表示未初始化
-        self.last_player_list = []     # 上次的玩家列表
+        self.last_player_ids = None  # 上次的玩家ID集合，None表示未初始化
+        self.last_player_id_name_map = {}  # 上次的 id -> 玩家名称 映射
         self.last_status = None        # 上次的服务器状态
         self.last_update_time = None   # 上次更新时间
         
@@ -90,6 +90,130 @@ class MyPlugin(Star):
                 player_names.append(str(player))
         return player_names
 
+    def _is_fake_player_name(self, player_name):
+        """判断玩家名是否为假人（Anonymous Player）。"""
+        normalized_name = str(player_name).strip().lower()
+        return normalized_name == "anonymous player" or normalized_name.startswith("anonymous player ")
+
+    def _count_fake_players(self, player_list):
+        """统计玩家列表中的假人数。"""
+        if not player_list or not isinstance(player_list, list):
+            return 0
+
+        fake_player_count = 0
+        for player in player_list:
+            if isinstance(player, dict):
+                player_name = player.get("name_clean") or player.get("name") or player.get("username") or ""
+            else:
+                player_name = player
+
+            if self._is_fake_player_name(player_name):
+                fake_player_count += 1
+
+        return fake_player_count
+
+    def _extract_player_id(self, player):
+        """从玩家数据中提取稳定唯一标识，优先使用官方 ID 字段"""
+        if isinstance(player, dict):
+            for key in ("id", "uuid", "uuid_raw", "xuid"):
+                value = player.get(key)
+                if value not in (None, ""):
+                    return str(value)
+
+            # 部分 API 不返回 ID，退化到名称作为标识
+            name = player.get("name_clean") or player.get("name") or player.get("username")
+            if name:
+                return f"name:{name}"
+            return None
+
+        if player not in (None, ""):
+            return f"name:{player}"
+        return None
+
+    def _extract_player_identity_map(self, player_list):
+        """提取 id -> 显示名称 映射，用于 ID 级别变化检测"""
+        if not player_list or not isinstance(player_list, list):
+            return {}
+
+        player_map = {}
+        for player in player_list:
+            player_id = self._extract_player_id(player)
+            if not player_id or player_id in player_map:
+                continue
+
+            if isinstance(player, dict):
+                display_name = (
+                    player.get("name_clean")
+                    or player.get("name")
+                    or player.get("username")
+                    or f"未知玩家({player_id[:8]})"
+                )
+            else:
+                display_name = str(player)
+
+            player_map[player_id] = str(display_name)
+
+        return player_map
+
+    def _build_status_api_url(self, base_url):
+        """根据 base_url 构建完整的状态查询 URL。"""
+        if base_url is None:
+            return None
+
+        normalized_base_url = str(base_url).strip()
+        if not normalized_base_url:
+            return None
+
+        if (
+            "{type}" in normalized_base_url
+            or "{ip}" in normalized_base_url
+            or "{port}" in normalized_base_url
+        ):
+            return (
+                normalized_base_url
+                .replace("{type}", str(self.server_type))
+                .replace("{ip}", str(self.server_ip))
+                .replace("{port}", str(self.server_port))
+            )
+
+        normalized_base_url = normalized_base_url.rstrip("/") + "/"
+        return f"{normalized_base_url}{self.server_type}/{self.server_ip}:{self.server_port}"
+
+    async def _request_server_status(self, session, api_url, source_name):
+        """请求单个状态接口，成功返回解析后的服务器信息，失败返回 None。"""
+        if not api_url:
+            return None
+
+        headers = {
+            "User-Agent": "MinecraftServerMonitor/1.0 (AstrBot Plugin)"
+        }
+        request_timeout = aiohttp.ClientTimeout(total=10)
+
+        try:
+            logger.info(f"使用{source_name}查询: {api_url}")
+            async with session.get(api_url, headers=headers, timeout=request_timeout) as response:
+                if response.status != 200:
+                    logger.warning(f"{source_name} 查询失败 (状态码: {response.status})")
+                    return None
+
+                try:
+                    data = await response.json()
+                    logger.debug(f"{source_name}返回数据: {json.dumps(data, ensure_ascii=False)[:500]}...")
+                except json.JSONDecodeError:
+                    logger.error(f"{source_name} 响应JSON解析失败: {await response.text()}")
+                    return None
+
+                return self._parse_server_data(data)
+        except aiohttp.ClientError as e:
+            logger.warning(f"{source_name} 网络请求失败: {e}")
+            return None
+        except asyncio.TimeoutError:
+            logger.warning(f"{source_name} 请求超时")
+            return None
+        except Exception as e:
+            logger.error(f"{source_name} 查询时发生未知错误: {e}")
+            return None
+
     async def _fetch_server_data(self):
         """
         获取Minecraft服务器原始数据，使用mcstatus.io API
@@ -101,48 +225,43 @@ class MyPlugin(Star):
         if not self.server_ip or not self.server_port:
             logger.error("服务器IP或端口未配置")
             return None
-        
+
+        primary_api_url = self._build_status_api_url(self.DEFAULT_API_BASE_URL)
+        custom_api_url = self._build_status_api_url(self.api_base_url)
+        use_custom_api = bool(custom_api_url and custom_api_url != primary_api_url)
+
         try:
-            # 通过基础地址构建API URL，兼容旧版模板配置
-            if "{type}" in self.api_base_url or "{ip}" in self.api_base_url or "{port}" in self.api_base_url:
-                api_url = (
-                    self.api_base_url
-                    .replace("{type}", str(self.server_type))
-                    .replace("{ip}", str(self.server_ip))
-                    .replace("{port}", str(self.server_port))
-                )
-            else:
-                base_url = self.api_base_url.rstrip("/") + "/"
-                api_url = f"{base_url}{self.server_type}/{self.server_ip}:{self.server_port}"
-            
-            logger.info(f"使用状态API查询: {api_url}")
-            
             async with aiohttp.ClientSession() as session:
-                # 添加User-Agent头以避免某些API限制
-                headers = {
-                    'User-Agent': 'MinecraftServerMonitor/1.0 (AstrBot Plugin)'
-                }
-                
-                async with session.get(api_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
+                primary_task = asyncio.create_task(
+                    self._request_server_status(session, primary_api_url, "主接口(mcstatus.io)")
+                )
+
+                custom_task = None
+                if use_custom_api:
+                    custom_task = asyncio.create_task(
+                        self._request_server_status(session, custom_api_url, "自定义接口")
+                    )
+
+                # 主接口优先：即使并发发起，也始终先看主接口结果
+                primary_result = await primary_task
+                if primary_result is not None:
+                    if custom_task and not custom_task.done():
+                        custom_task.cancel()
                         try:
-                            data = await response.json()
-                            logger.debug(f"API返回数据: {json.dumps(data, ensure_ascii=False)[:500]}...")  # 只记录前500字符
-                        except json.JSONDecodeError:
-                            logger.error(f"API响应JSON解析失败: {await response.text()}")
-                            return None
-                        
-                        return self._parse_server_data(data)
-                    else:
-                        logger.warning(f"获取服务器信息失败 (状态码: {response.status})")
-                        return None
-                        
-        except aiohttp.ClientError as e:
-            logger.error(f"网络请求失败: {e}")
-            return None
-        except asyncio.TimeoutError:
-            logger.warning("请求超时")
-            return None
+                            await custom_task
+                        except asyncio.CancelledError:
+                            pass
+                    return primary_result
+
+                # 主接口失败后，回退到自定义接口
+                if custom_task:
+                    custom_result = await custom_task
+                    if custom_result is not None:
+                        logger.info("主接口查询失败，已回退到自定义接口结果")
+                        return custom_result
+
+                logger.warning("主接口与自定义接口查询均失败")
+                return None
         except Exception as e:
             logger.error(f"获取服务器信息时发生未知错误: {e}")
             return None
@@ -271,9 +390,11 @@ class MyPlugin(Star):
         # 添加服务器软件信息
         if server_software and server_software != '未知':
             message += f"🛠️ 软件: {server_software}\n"
-            
+
         message += f"👥 在线玩家: {online_players}/{max_players}"
-        
+        fake_player_count = self._count_fake_players(player_list)
+        message += f"\n🤖 在线假人: {fake_player_count}"
+
         # 处理玩家列表
         if online_players > 0:
             player_names = self._extract_player_names(player_list)
@@ -331,25 +452,25 @@ class MyPlugin(Star):
         if server_data is None:
             return False, "获取服务器数据失败"
         
-        current_online = server_data['online']
         current_players = server_data['players']
         current_status = server_data['status']
-        
-        # 使用统一的玩家名称提取方法
-        current_player_names = self._extract_player_names(current_players)
-        
+
+        # 使用玩家 ID 判断加入/离开，避免仅按总人数判断的误报
+        current_player_map = self._extract_player_identity_map(current_players)
+        current_player_ids = set(current_player_map.keys())
+
         # 检查是否是首次检查（使用 None 判断）
-        if self.last_player_count is None:
+        if self.last_player_ids is None:
             # 首次检查，更新缓存但不发送消息（除非有玩家在线）
-            self.last_player_count = current_online
-            self.last_player_list = current_player_names.copy()
+            self.last_player_ids = current_player_ids.copy()
+            self.last_player_id_name_map = current_player_map.copy()
             self.last_status = current_status
-            
-            if current_online > 0:
+
+            if current_player_ids:
                 return True, "服务器监控已启动，当前有玩家在线"
             else:
                 return True, "服务器监控已启动"
-        
+
         # 检查变化
         changes = []
         
@@ -359,29 +480,29 @@ class MyPlugin(Star):
                 changes.append(f"🟢 服务器已上线")
             else:
                 changes.append(f"🔴 服务器已离线")
-        
-        # 检查玩家数量变化
-        player_diff = current_online - self.last_player_count
-        if player_diff > 0:
-            # 有玩家加入
-            new_players = set(current_player_names) - set(self.last_player_list)
-            if new_players:
-                changes.append(f"📈 {', '.join(new_players)} 加入了服务器 (+{player_diff})")
-            else:
-                changes.append(f"📈 有 {player_diff} 名玩家加入了服务器")
-        elif player_diff < 0:
-            # 有玩家离开
-            left_players = set(self.last_player_list) - set(current_player_names)
-            if left_players:
-                changes.append(f"📉 {', '.join(left_players)} 离开了服务器 ({player_diff})")
-            else:
-                changes.append(f"📉 有 {abs(player_diff)} 名玩家离开了服务器")
-        
+
+        # 检查玩家 ID 变化
+        joined_player_ids = current_player_ids - self.last_player_ids
+        if joined_player_ids:
+            joined_player_names = [
+                current_player_map.get(player_id, f"ID:{player_id[:8]}")
+                for player_id in sorted(joined_player_ids)
+            ]
+            changes.append(f"📈 {', '.join(joined_player_names)} 加入了服务器 (+{len(joined_player_ids)})")
+
+        left_player_ids = self.last_player_ids - current_player_ids
+        if left_player_ids:
+            left_player_names = [
+                self.last_player_id_name_map.get(player_id, f"ID:{player_id[:8]}")
+                for player_id in sorted(left_player_ids)
+            ]
+            changes.append(f"📉 {', '.join(left_player_names)} 离开了服务器 (-{len(left_player_ids)})")
+
         # 更新缓存
-        self.last_player_count = current_online
-        self.last_player_list = current_player_names.copy()
+        self.last_player_ids = current_player_ids.copy()
+        self.last_player_id_name_map = current_player_map.copy()
         self.last_status = current_status
-        
+
         # 如果有变化，返回True和变化描述
         if changes:
             return True, "\n".join(changes)
@@ -493,8 +614,8 @@ class MyPlugin(Star):
     @filter.command("重置监控")
     async def reset_monitor(self, event: AstrMessageEvent):
         """重置监控状态缓存"""
-        self.last_player_count = None
-        self.last_player_list = []
+        self.last_player_ids = None
+        self.last_player_id_name_map = {}
         self.last_status = None
         logger.info("监控状态缓存已重置")
         yield event.plain_result("✅ 监控状态缓存已重置，下次检测将视为首次检测")
